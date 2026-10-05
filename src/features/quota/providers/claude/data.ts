@@ -181,7 +181,7 @@ const headerValue = (
   return undefined;
 };
 
-const buildWindowsFromRateLimitHeaders = (
+export const buildWindowsFromRateLimitHeaders = (
   headers: Record<string, string[]>,
   t: TFunction
 ): ClaudeQuotaWindow[] => {
@@ -195,8 +195,12 @@ const buildWindowsFromRateLimitHeaders = (
 
   for (const spec of specs) {
     const utilRaw = read(`${spec.key === 'five_hour' ? '5h' : '7d'}-utilization`);
-    const usedPercent = normalizeNumberValue(utilRaw);
-    if (usedPercent === null) continue;
+    const utilization = normalizeNumberValue(utilRaw);
+    if (utilization === null) continue;
+    // Rate-limit headers report a 0–1 fraction; /api/oauth/usage reports a
+    // 0–100 percent. Normalize to the percent scale the UI expects.
+    const usedPercent =
+      utilization <= 1 ? Math.round(utilization * 10000) / 100 : utilization;
     const resetUnix = normalizeNumberValue(read(`${spec.key === 'five_hour' ? '5h' : '7d'}-reset`));
     const resetIso =
       resetUnix !== null ? new Date(resetUnix * 1000).toISOString() : undefined;
