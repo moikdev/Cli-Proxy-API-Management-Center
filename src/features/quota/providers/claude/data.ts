@@ -154,6 +154,66 @@ export const resolveClaudePlanType = (profile: ClaudeProfileResponse | null): st
   return null;
 };
 
+/**
+ * Credentials without the `user:profile` scope (e.g. sk-ant-oat01 setup
+ * tokens) cannot call /api/oauth/usage. A 1-token /v1/messages probe still
+ * returns the unified rate-limit headers, which carry the same 5-hour and
+ * 7-day windows — used as a fallback so such accounts show real quota bars.
+ */
+const CLAUDE_PROBE_URL = 'https://api.anthropic.com/v1/messages';
+
+const CLAUDE_PROBE_BODY = JSON.stringify({
+  model: 'claude-haiku-4-5-20251001',
+  max_tokens: 1,
+  messages: [{ role: 'user', content: 'ping' }],
+});
+
+const headerValue = (
+  headers: Record<string, string[]>,
+  name: string
+): string | undefined => {
+  const lower = name.toLowerCase();
+  for (const [key, values] of Object.entries(headers)) {
+    if (key.toLowerCase() === lower && Array.isArray(values) && values.length > 0) {
+      return values[0];
+    }
+  }
+  return undefined;
+};
+
+const buildWindowsFromRateLimitHeaders = (
+  headers: Record<string, string[]>,
+  t: TFunction
+): ClaudeQuotaWindow[] => {
+  const windows: ClaudeQuotaWindow[] = [];
+  const read = (suffix: string) => headerValue(headers, `anthropic-ratelimit-unified-${suffix}`);
+
+  const specs: { key: string; id: string; labelKey: string; periodKey: string }[] = [
+    { key: 'five_hour', id: 'five-hour', labelKey: 'claude_quota.five_hour', periodKey: 'five_hour' },
+    { key: 'seven_day', id: 'seven-day', labelKey: 'claude_quota.seven_day', periodKey: 'seven_day' },
+  ];
+
+  for (const spec of specs) {
+    const utilRaw = read(`${spec.key === 'five_hour' ? '5h' : '7d'}-utilization`);
+    const usedPercent = normalizeNumberValue(utilRaw);
+    if (usedPercent === null) continue;
+    const resetUnix = normalizeNumberValue(read(`${spec.key === 'five_hour' ? '5h' : '7d'}-reset`));
+    const resetIso =
+      resetUnix !== null ? new Date(resetUnix * 1000).toISOString() : undefined;
+    windows.push({
+      id: spec.id,
+      label: t(spec.labelKey),
+      labelKey: spec.labelKey,
+      usedPercent,
+      resetLabel: formatQuotaResetTime(resetIso),
+      resetAtMs: resolveResetMs([resetIso]),
+      periodHours: claudePeriodHours(spec.periodKey),
+    });
+  }
+
+  return windows;
+};
+
 const fetchClaudeQuota = async (file: AuthFileItem, t: TFunction): Promise<ClaudeQuotaData> => {
   const rawAuthIndex = file['auth_index'] ?? file.authIndex;
   const authIndex = normalizeAuthIndex(rawAuthIndex);
@@ -176,22 +236,6 @@ const fetchClaudeQuota = async (file: AuthFileItem, t: TFunction): Promise<Claud
     }),
   ]);
 
-  if (usageResult.status === 'rejected') {
-    throw usageResult.reason;
-  }
-
-  const result = usageResult.value;
-
-  if (result.statusCode < 200 || result.statusCode >= 300) {
-    throw createStatusError(getApiCallErrorMessage(result), result.statusCode);
-  }
-
-  const payload = parseClaudeUsagePayload(result.body ?? result.bodyText);
-  if (!payload) {
-    throw new Error(t('claude_quota.empty_windows'));
-  }
-
-  const windows = buildClaudeQuotaWindows(payload, t);
   const planType =
     profileResult.status === 'fulfilled' &&
     profileResult.value.statusCode >= 200 &&
@@ -201,6 +245,37 @@ const fetchClaudeQuota = async (file: AuthFileItem, t: TFunction): Promise<Claud
         )
       : null;
 
+  if (usageResult.status === 'rejected') {
+    throw usageResult.reason;
+  }
+
+  const result = usageResult.value;
+
+  if (result.statusCode < 200 || result.statusCode >= 300) {
+    const probe = await apiCallApi.request({
+      authIndex,
+      method: 'POST',
+      url: CLAUDE_PROBE_URL,
+      header: {
+        Authorization: 'Bearer $TOKEN$',
+        'Content-Type': 'application/json',
+        'anthropic-version': '2023-06-01',
+      },
+      data: CLAUDE_PROBE_BODY,
+    });
+    const windows = buildWindowsFromRateLimitHeaders(probe.header ?? {}, t);
+    if (windows.length > 0) {
+      return { windows, planType };
+    }
+    throw createStatusError(getApiCallErrorMessage(result), result.statusCode);
+  }
+
+  const payload = parseClaudeUsagePayload(result.body ?? result.bodyText);
+  if (!payload) {
+    throw new Error(t('claude_quota.empty_windows'));
+  }
+
+  const windows = buildClaudeQuotaWindows(payload, t);
   return { windows, extraUsage: payload.extra_usage, planType };
 };
 
