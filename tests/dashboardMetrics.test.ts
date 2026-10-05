@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { formatCompactNumber, formatPercent } from '../src/utils/format';
-import { getProviderKeyCounts } from '../src/features/dashboard/hooks/useDashboardOverview';
+import {
+  buildDashboardTraffic,
+  getProviderKeyCounts,
+} from '../src/features/dashboard/hooks/useDashboardOverview';
 import {
   axisMax,
   niceCeil,
@@ -134,4 +137,38 @@ describe('providerLabel', () => {
     expect(providerLabel('unknown', 'Unattributed')).toBe('Unattributed');
     expect(providerLabel('', 'Unattributed')).toBe('Unattributed');
   });
+});
+
+test('provider traffic uses recent buckets rather than lifetime counters', () => {
+  const usage = new Map([
+    [
+      'codex',
+      new Map([
+        [
+          'https://fixture.example|fixture-key',
+          {
+            success: 5000,
+            failed: 100,
+            recentRequests: [{ success: 8, failed: 2 }],
+          },
+        ],
+      ]),
+    ],
+  ]);
+  const result = buildDashboardTraffic(usage, [
+    {
+      name: 'fixture.json',
+      type: 'claude',
+      success: 6000,
+      failed: 300,
+      recent_requests: [{ success: 10, failed: 0 }],
+    },
+  ]);
+  expect(result.traffic.total).toBe(20);
+  expect(
+    result.providers.map(({ id, total, successRate }) => ({ id, total, successRate }))
+  ).toEqual([
+    { id: 'claude', total: 10, successRate: 100 },
+    { id: 'codex', total: 10, successRate: 80 },
+  ]);
 });

@@ -27,6 +27,7 @@ interface AuthStoreState extends AuthState {
   updateServerPluginSupport: (supportsPlugin: boolean) => void;
 }
 
+let authAttempt = 0;
 let restoreSessionPromise: Promise<boolean> | null = null;
 
 export const useAuthStore = create<AuthStoreState>()(
@@ -92,6 +93,8 @@ export const useAuthStore = create<AuthStoreState>()(
 
       // 登录
       login: async (credentials) => {
+        const attempt = ++authAttempt;
+        let revision: number | undefined;
         const apiBase = normalizeApiBase(credentials.apiBase);
         const managementKey = credentials.managementKey.trim();
         const rememberPassword = credentials.rememberPassword ?? get().rememberPassword ?? false;
@@ -114,7 +117,7 @@ export const useAuthStore = create<AuthStoreState>()(
           });
 
           // 测试连接 - 获取配置。只在 v8 路由不存在时诊断旧版后端。
-          const revision = apiClient.getConnectionRevision();
+          revision = apiClient.getConnectionRevision();
           try {
             await useConfigStore.getState().fetchConfig(true);
           } catch (error) {
@@ -127,6 +130,10 @@ export const useAuthStore = create<AuthStoreState>()(
               throw new LegacyBackendError();
             }
             throw error;
+          }
+
+          if (attempt !== authAttempt || revision !== apiClient.getConnectionRevision()) {
+            throw new DOMException('The management connection changed.', 'AbortError');
           }
 
           // 登录成功
@@ -143,13 +150,16 @@ export const useAuthStore = create<AuthStoreState>()(
             localStorage.removeItem('isLoggedIn');
           }
         } catch (error: unknown) {
-          set({ connectionStatus: 'error' });
+          if (attempt === authAttempt && revision === apiClient.getConnectionRevision()) {
+            set({ connectionStatus: 'error' });
+          }
           throw error;
         }
       },
 
       // 登出
       logout: () => {
+        authAttempt += 1;
         restoreSessionPromise = null;
         apiClient.setConfig({ apiBase: '', managementKey: '' });
         useConfigStore.getState().clearCache();
@@ -169,6 +179,8 @@ export const useAuthStore = create<AuthStoreState>()(
 
       // 检查认证状态
       checkAuth: async () => {
+        const attempt = ++authAttempt;
+        let revision: number | undefined;
         const { managementKey, apiBase } = get();
 
         if (!managementKey || !apiBase) {
@@ -178,10 +190,14 @@ export const useAuthStore = create<AuthStoreState>()(
         try {
           // 重新配置客户端
           apiClient.setConfig({ apiBase, managementKey });
+          revision = apiClient.getConnectionRevision();
           set({ supportsPlugin: false });
 
           // 验证连接
           await useConfigStore.getState().fetchConfig();
+          if (attempt !== authAttempt || revision !== apiClient.getConnectionRevision()) {
+            return false;
+          }
 
           set({
             isAuthenticated: true,
@@ -190,6 +206,8 @@ export const useAuthStore = create<AuthStoreState>()(
 
           return true;
         } catch {
+          if (attempt !== authAttempt || revision !== apiClient.getConnectionRevision())
+            return false;
           set({
             isAuthenticated: false,
             connectionStatus: 'error',

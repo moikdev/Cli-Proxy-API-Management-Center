@@ -2,7 +2,8 @@
  * 可用模型获取
  */
 
-import axios from 'axios';
+import { apiClient } from './client';
+import { guardConfigConnection } from './configValue';
 import { normalizeModelList } from '@/utils/models';
 import { normalizeApiBase } from '@/utils/connection';
 import { apiCallApi, getApiCallErrorMessage } from './apiCall';
@@ -42,6 +43,29 @@ const buildV1ModelsEndpoint = (baseUrl: string): string => {
   if (/\/v1\/models$/i.test(trimmed)) return trimmed;
   if (/\/v1$/i.test(trimmed)) return `${trimmed}/models`;
   return `${trimmed}/v1/models`;
+};
+
+/** Use the backend listener behind a gateway, without sending its key to that gateway. */
+const buildManagementModelsEndpoint = (baseUrl: string, config: unknown): string => {
+  const server = isRecord(config) && isRecord(config.server) ? config.server : null;
+  const port = server?.port;
+  // TLS listeners need their public hostname for certificate verification. Missing listener
+  // settings also retain the public endpoint, but the request still uses management transport.
+  if (
+    !server ||
+    (isRecord(server.tls) && server.tls.enable === true) ||
+    typeof port !== 'number' ||
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65535
+  ) {
+    return buildV1ModelsEndpoint(baseUrl);
+  }
+  let host = typeof server.host === 'string' ? server.host.trim() : '';
+  if (!host || host === '0.0.0.0') host = '127.0.0.1';
+  if (host === '::' || host === '[::]') host = '::1';
+  if (host.includes(':') && !host.startsWith('[')) host = `[${host}]`;
+  return new URL('/v1/models', `http://${host}:${port}`).href;
 };
 
 const buildClaudeModelsEndpoint = (baseUrl: string): string => {
@@ -87,21 +111,26 @@ export const modelsApi = {
    * Fetch available models from /v1/models endpoint (for system info page)
    */
   async fetchModels(baseUrl: string, apiKey?: string, headers: Record<string, string> = {}) {
-    const endpoint = buildV1ModelsEndpoint(baseUrl);
-    if (!endpoint) {
-      throw new Error('Invalid base url');
-    }
-
+    if (!buildV1ModelsEndpoint(baseUrl)) throw new Error('Invalid base url');
+    const assertConnection = guardConfigConnection();
+    const config = await apiClient.get<unknown>('/config');
+    assertConnection();
+    const endpoint = buildManagementModelsEndpoint(baseUrl, config);
     const resolvedHeaders = { ...headers };
     if (apiKey && !hasHeader(resolvedHeaders, 'authorization')) {
       resolvedHeaders.Authorization = `Bearer ${apiKey}`;
     }
-
-    const response = await axios.get(endpoint, {
-      headers: Object.keys(resolvedHeaders).length ? resolvedHeaders : undefined,
+    const result = await apiCallApi.request({
+      method: 'GET',
+      url: endpoint,
+      proxy_url: 'direct',
+      header: Object.keys(resolvedHeaders).length ? resolvedHeaders : undefined,
     });
-    const payload = response.data?.data ?? response.data?.models ?? response.data;
-    return normalizeModelList(payload, { dedupe: true });
+    assertConnection();
+    if (result.statusCode < 200 || result.statusCode >= 300) {
+      throw new Error(getApiCallErrorMessage(result));
+    }
+    return normalizeModelList(result.body ?? result.bodyText, { dedupe: true });
   },
 
   /**

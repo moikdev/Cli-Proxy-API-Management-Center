@@ -9,7 +9,7 @@ import {
 } from './types';
 
 const PROVIDERS_UI_STATE_KEY = 'providersPage.uiState';
-const DEFAULT_ACTIVE_BRAND: ProviderBrand = 'gemini';
+const DEFAULT_ACTIVE_BRAND = null;
 const DEFAULT_PROVIDER_FILTER_STATE: ProviderFilterState = {
   filter: '',
   sortBy: 'name',
@@ -29,7 +29,7 @@ export interface ProviderFilterState {
 }
 
 export interface ProvidersWorkbenchUiState {
-  activeBrand: ProviderBrand;
+  activeBrand: ProviderBrand | null;
   filtersByBrand: Partial<Record<ProviderBrand, ProviderFilterState>>;
 }
 
@@ -110,3 +110,12 @@ export const writeProvidersWorkbenchUiState = (state: ProvidersWorkbenchUiState)
     // ignore storage failures
   }
 };
+
+/** Keep an explicit choice, otherwise start with the first configured category. */
+export function resolveActiveProviderBrand(
+  groups: readonly { id: ProviderBrand; resources: readonly unknown[] }[],
+  preferred: ProviderBrand | null
+): ProviderBrand {
+  if (preferred && groups.some((group) => group.id === preferred)) return preferred;
+  return groups.find((group) => group.resources.length > 0)?.id ?? groups[0]?.id ?? 'gemini';
+}

@@ -447,7 +447,8 @@ const updateKey = async (
   const before = serialize(original);
   const after = serialize(config);
   const nextGroup = { ...group };
-  if (!equal(before['base-url'], after['base-url'])) {
+  const baseUrlChanged = !equal(before['base-url'], after['base-url']);
+  if (baseUrlChanged) {
     if (after['base-url'] === undefined) delete nextGroup['base-url'];
     else nextGroup['base-url'] = after['base-url'];
   }
@@ -468,7 +469,22 @@ const updateKey = async (
   );
   // Response metadata belongs to credentials, not arbitrary nested maps such as headers.
   delete keys[keyIndex]['auth-index'];
-  groups[index] = { ...nextGroup, keys };
+  if (baseUrlChanged && keys.length > 1) {
+    // v8 URLs belong to groups. Move only this credential into a copy of the
+    // group so its inherited policies survive without rerouting sibling keys.
+    const names = new Set(groups.map((entry) => entry.name));
+    const stem = String(group.name || family);
+    let suffix = 2;
+    while (names.has(`${stem}-${suffix}`)) suffix += 1;
+    groups[index] = { ...group, keys: keys.filter((_, i) => i !== keyIndex) };
+    groups.splice(index + 1, 0, {
+      ...nextGroup,
+      name: `${stem}-${suffix}`,
+      keys: [keys[keyIndex]],
+    });
+  } else {
+    groups[index] = { ...nextGroup, keys };
+  }
   await putGroups(family, groups);
 };
 const deleteKey = async (

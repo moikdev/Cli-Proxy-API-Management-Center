@@ -7,6 +7,7 @@ import {
   mergeRecentRequestBucketGroups,
   normalizeRecentRequestUsageEntry,
   type RecentRequestBucket,
+  type RecentRequestUsageEntry,
 } from '@/utils/recentRequests';
 import type { Config } from '@/types';
 import type { AuthFileItem } from '@/types/authFile';
@@ -79,15 +80,11 @@ const buildTrafficWindow = (bucketGroups: RecentRequestBucket[][]): TrafficWindo
 
 interface ProviderAccumulator {
   credentials: number;
-  success: number;
-  failure: number;
   bucketGroups: RecentRequestBucket[][];
 }
 
 const createAccumulator = (): ProviderAccumulator => ({
   credentials: 0,
-  success: 0,
-  failure: 0,
   bucketGroups: [],
 });
 
@@ -103,12 +100,83 @@ export const getProviderKeyCounts = (config: Config) => ({
 });
 
 /**
- * 汇总仪表盘所需的全部数据。
+ * Aggregate the same rolling bucket window for the headline and provider rows.
  *
  * 流量数据有两个互不重叠的来源：`api-key-usage`（配置内联的 API Key 凭证）
  * 与 `auth-files`（文件/运行时凭证）。后端对二者的判定条件互斥，但插件提供的
  * 凭证理论上可同时命中，因此这里按 `account_type` + `account` 做一次防御性去重。
  */
+export function buildDashboardTraffic(
+  usageByProvider: Map<string, Map<string, RecentRequestUsageEntry>>,
+  authFiles: AuthFileItem[] | null
+): { traffic: TrafficWindow; providers: ProviderTraffic[] } {
+  const accumulators = new Map<string, ProviderAccumulator>();
+  const allBucketGroups: RecentRequestBucket[][] = [];
+  const apiKeysFromUsage = new Set<string>();
+
+  const accumulatorFor = (providerId: string): ProviderAccumulator => {
+    const existing = accumulators.get(providerId);
+    if (existing) return existing;
+    const created = createAccumulator();
+    accumulators.set(providerId, created);
+    return created;
+  };
+
+  usageByProvider.forEach((entriesByKey, providerId) => {
+    const accumulator = accumulatorFor(providerId);
+    entriesByKey.forEach((entry, compositeKey) => {
+      const apiKey = apiKeyFromCompositeKey(compositeKey);
+      if (apiKey) {
+        apiKeysFromUsage.add(apiKey);
+      }
+      accumulator.credentials += 1;
+      if (entry.recentRequests.length > 0) {
+        accumulator.bucketGroups.push(entry.recentRequests);
+        allBucketGroups.push(entry.recentRequests);
+      }
+    });
+  });
+
+  (authFiles ?? []).forEach((file) => {
+    const accountType = String(file.account_type ?? '')
+      .trim()
+      .toLowerCase();
+    const account = String(file.account ?? '').trim();
+    // 已经由 api-key-usage 统计过的凭证不再重复计入
+    if (accountType === 'api_key' && account && apiKeysFromUsage.has(account)) {
+      return;
+    }
+
+    const accumulator = accumulatorFor(providerIdOfAuthFile(file));
+    const entry = normalizeRecentRequestUsageEntry(file);
+    accumulator.credentials += 1;
+    if (entry.recentRequests.length > 0) {
+      accumulator.bucketGroups.push(entry.recentRequests);
+      allBucketGroups.push(entry.recentRequests);
+    }
+  });
+
+  const providerRows: ProviderTraffic[] = Array.from(accumulators.entries())
+    .map(([id, accumulator]) => {
+      const window = buildTrafficWindow(accumulator.bucketGroups);
+      return {
+        id,
+        credentials: accumulator.credentials,
+        success: window.totalSuccess,
+        failure: window.totalFailure,
+        total: window.total,
+        successRate: window.successRate,
+        buckets: window.buckets,
+      };
+    })
+    .sort((a, b) => b.total - a.total || b.credentials - a.credentials || a.id.localeCompare(b.id));
+
+  return {
+    traffic: buildTrafficWindow(allBucketGroups),
+    providers: providerRows,
+  };
+}
+
 export function useDashboardOverview() {
   const connectionStatus = useAuthStore((state) => state.connectionStatus);
   const apiBase = useAuthStore((state) => state.apiBase);
@@ -168,79 +236,10 @@ export function useDashboardOverview() {
 
   const providerKeyCounts = useMemo(() => (config ? getProviderKeyCounts(config) : null), [config]);
 
-  const { traffic, providers } = useMemo(() => {
-    const accumulators = new Map<string, ProviderAccumulator>();
-    const allBucketGroups: RecentRequestBucket[][] = [];
-    const apiKeysFromUsage = new Set<string>();
-
-    const accumulatorFor = (providerId: string): ProviderAccumulator => {
-      const existing = accumulators.get(providerId);
-      if (existing) return existing;
-      const created = createAccumulator();
-      accumulators.set(providerId, created);
-      return created;
-    };
-
-    usageByProvider.forEach((entriesByKey, providerId) => {
-      const accumulator = accumulatorFor(providerId);
-      entriesByKey.forEach((entry, compositeKey) => {
-        const apiKey = apiKeyFromCompositeKey(compositeKey);
-        if (apiKey) {
-          apiKeysFromUsage.add(apiKey);
-        }
-        accumulator.credentials += 1;
-        accumulator.success += entry.success;
-        accumulator.failure += entry.failed;
-        if (entry.recentRequests.length > 0) {
-          accumulator.bucketGroups.push(entry.recentRequests);
-          allBucketGroups.push(entry.recentRequests);
-        }
-      });
-    });
-
-    (authFiles ?? []).forEach((file) => {
-      const accountType = String(file.account_type ?? '')
-        .trim()
-        .toLowerCase();
-      const account = String(file.account ?? '').trim();
-      // 已经由 api-key-usage 统计过的凭证不再重复计入
-      if (accountType === 'api_key' && account && apiKeysFromUsage.has(account)) {
-        return;
-      }
-
-      const accumulator = accumulatorFor(providerIdOfAuthFile(file));
-      const entry = normalizeRecentRequestUsageEntry(file);
-      accumulator.credentials += 1;
-      accumulator.success += entry.success;
-      accumulator.failure += entry.failed;
-      if (entry.recentRequests.length > 0) {
-        accumulator.bucketGroups.push(entry.recentRequests);
-        allBucketGroups.push(entry.recentRequests);
-      }
-    });
-
-    const providerRows: ProviderTraffic[] = Array.from(accumulators.entries())
-      .map(([id, accumulator]) => {
-        const total = accumulator.success + accumulator.failure;
-        return {
-          id,
-          credentials: accumulator.credentials,
-          success: accumulator.success,
-          failure: accumulator.failure,
-          total,
-          successRate: total > 0 ? (accumulator.success / total) * 100 : null,
-          buckets: mergeRecentRequestBucketGroups(accumulator.bucketGroups),
-        };
-      })
-      .sort(
-        (a, b) => b.total - a.total || b.credentials - a.credentials || a.id.localeCompare(b.id)
-      );
-
-    return {
-      traffic: buildTrafficWindow(allBucketGroups),
-      providers: providerRows,
-    };
-  }, [usageByProvider, authFiles]);
+  const { traffic, providers } = useMemo(
+    () => buildDashboardTraffic(usageByProvider, authFiles),
+    [usageByProvider, authFiles]
+  );
 
   const credentials = useMemo<CredentialHealth | null>(() => {
     if (!authFiles) return null;

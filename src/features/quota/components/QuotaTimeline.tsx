@@ -16,7 +16,7 @@ import { useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import { formatRelativeInstant, TYPE_COLORS } from '@/utils/quota';
-import { getQuotaCacheKey, getQuotaDisplayName } from '@/utils/quota/identity';
+import { getQuotaCacheKey } from '@/utils/quota/identity';
 import { useNow } from '@/hooks/useNow';
 import type { ResolvedTheme, ThemeColors } from '@/types';
 import {
@@ -52,7 +52,8 @@ export interface QuotaTimelineProps {
    * off the entry, and lanes see exactly what the cards see.
    */
   quotaFor: (entry: QuotaFileEntry) => QuotaCardState | undefined;
-  displayNameFor: (name: string) => string;
+  /** Label for a lane; the page owns email masking. */
+  displayNameFor: (entry: QuotaFileEntry) => string;
   resolvedTheme: ResolvedTheme;
   /** Injectable for tests/screenshots; defaults to the real clock. */
   now?: number;
@@ -93,10 +94,7 @@ export function QuotaTimeline({
     () =>
       entries.map((entry) => ({
         name: getQuotaCacheKey(entry.file),
-        displayName:
-          entry.type === 'devin'
-            ? getQuotaDisplayName(entry.file)
-            : displayNameFor(entry.file.name),
+        displayName: displayNameFor(entry),
         provider: entry.type,
         quota: quotaFor(entry),
       })),
@@ -355,9 +353,13 @@ function Lane({ lane, span, now, mode, cells, nowPercent, resolvedTheme }: LaneP
           {periodLabel && <span className={styles.lanePeriod}>{periodLabel}</span>}
         </div>
         <div className={styles.laneLimits}>
-          {lane.limits.map((limit) => (
-            <span key={limit.label} className={styles.laneLimit}>
-              {lane.provider === 'meta' ? t(limit.label) : limit.label}{' '}
+          {lane.limits.map((limit, index) => (
+            <span key={`${limit.labelKey ?? limit.label}:${index}`} className={styles.laneLimit}>
+              {limit.labelKey
+                ? t(limit.labelKey, limit.labelParams)
+                : lane.provider === 'meta'
+                  ? t(limit.label)
+                  : limit.label}{' '}
               <b>{limit.remaining}%</b>
             </span>
           ))}

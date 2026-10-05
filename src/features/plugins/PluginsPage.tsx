@@ -17,14 +17,13 @@ import {
   IconTrash2,
 } from '@/components/ui/icons';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
-import { pluginsApi, pluginStoreApi } from '@/services/api';
+import { pluginsApi } from '@/services/api';
 import { useAuthStore, useConfigStore, useNotificationStore } from '@/stores';
 import { getErrorMessage, isRecord } from '@/utils/helpers';
 import type {
   PluginConfigField,
   PluginListEntry,
   PluginListResponse,
-  PluginStoreEntry,
 } from '@/types';
 import {
   buildPluginConfigDraft,
@@ -38,7 +37,6 @@ import {
   resolvePluginAssetURL,
 } from './pluginResources';
 import { waitForPluginState } from './pluginPolling';
-import { getPluginLogo } from './pluginLogo';
 import styles from './PluginsPage.module.scss';
 
 type PluginRuntimeWaitStatus = 'ready' | 'globalDisabled' | 'timeout';
@@ -66,17 +64,11 @@ export function PluginsPage() {
   const navigate = useNavigate();
   const connectionStatus = useAuthStore((state) => state.connectionStatus);
   const apiBase = useAuthStore((state) => state.apiBase);
-  const managementKey = useAuthStore((state) => state.managementKey);
   const clearConfigCache = useConfigStore((state) => state.clearCache);
   const showNotification = useNotificationStore((state) => state.showNotification);
   const showConfirmation = useNotificationStore((state) => state.showConfirmation);
 
   const [data, setData] = useState<PluginListResponse | null>(null);
-  const [storeLogos, setStoreLogos] = useState<{
-    apiBase: string;
-    managementKey: string;
-    entries: PluginStoreEntry[];
-  } | null>(null);
   const [filter, setFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -133,30 +125,6 @@ export function PluginsPage() {
   useEffect(() => {
     void loadPlugins();
   }, [loadPlugins]);
-
-  useEffect(() => {
-    setStoreLogos(null);
-    if (!connected || !data) return;
-    let cancelled = false;
-    void pluginStoreApi.list().then(
-      (response) => {
-        if (!cancelled) {
-          setStoreLogos({ apiBase, managementKey, entries: response.plugins });
-        }
-      },
-      () => {
-        // Store metadata is optional; its failure must not block plugin management.
-      }
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [connected, apiBase, managementKey, data]);
-
-  const logoEntries =
-    connected && storeLogos?.apiBase === apiBase && storeLogos.managementKey === managementKey
-      ? storeLogos.entries
-      : [];
 
   const pluginStats = useMemo(() => {
     const plugins = data?.plugins ?? [];
@@ -599,7 +567,7 @@ export function PluginsPage() {
       ) : (
         <div className={styles.pluginList}>
           {visiblePlugins.map((plugin) => {
-            const logo = resolvePluginAsset(getPluginLogo(plugin, logoEntries));
+            const logo = resolvePluginAsset(plugin.logo || plugin.metadata?.logo || '');
             const github = plugin.metadata?.githubRepository.trim();
             const openingConfig = openingConfigID === plugin.id;
             const deletingPlugin = deletingID === plugin.id;
@@ -611,7 +579,7 @@ export function PluginsPage() {
               <article key={plugin.id} className={styles.pluginRow}>
                 {/* Logo */}
                 <div className={styles.logoBox} aria-hidden="true">
-                  <PluginCardLogo key={logo} src={logo} />
+                  <PluginCardLogo src={logo} />
                 </div>
 
                 {/* Info */}

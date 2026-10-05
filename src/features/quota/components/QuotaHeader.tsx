@@ -7,6 +7,11 @@ export type QuotaHeaderProps = {
   totalCount: number;
   loadedCount: number;
   attentionCount: number;
+  /** Whether the list is narrowed to credentials that need attention. */
+  attentionActive: boolean;
+  onToggleAttention: () => void;
+  autoLoad: boolean;
+  onToggleAutoLoad: () => void;
   refreshing: boolean;
   disableControls: boolean;
   onRefreshAll: () => void;
@@ -20,11 +25,22 @@ export type QuotaHeaderProps = {
  * （标题 0ms → meta 70ms → 动作 140ms → tabs 210ms）。
  */
 export function QuotaHeader(props: QuotaHeaderProps) {
-  const { totalCount, loadedCount, attentionCount, refreshing, disableControls, onRefreshAll } =
-    props;
+  const {
+    totalCount,
+    loadedCount,
+    attentionCount,
+    attentionActive,
+    onToggleAttention,
+    autoLoad,
+    onToggleAutoLoad,
+    refreshing,
+    disableControls,
+    onRefreshAll,
+  } = props;
   const { t } = useTranslation();
   // 批量结果陆续落地时，「已加载」是页面上唯一滚动的数字
   const displayLoadedCount = useCountUp(loadedCount);
+  const showAttention = attentionCount > 0 || attentionActive;
 
   return (
     <header className={styles.header}>
@@ -42,19 +58,34 @@ export function QuotaHeader(props: QuotaHeaderProps) {
           <span className={loadedCount > 0 ? styles.metaLoaded : styles.metaMuted}>
             {t('quota_management.meta_loaded', { count: displayLoadedCount })}
           </span>
-          {attentionCount > 0 && (
+          {showAttention && (
             <>
               <span className={styles.metaDot} aria-hidden="true">
                 ·
               </span>
-              <span className={styles.metaAttention}>
+              <button
+                type="button"
+                className={`${styles.metaAttention} ${styles.metaAttentionButton}`}
+                onClick={onToggleAttention}
+                aria-pressed={attentionActive}
+                title={t('quota_management.attention_filter_label')}
+              >
                 {t('quota_management.meta_attention', { count: attentionCount })}
-              </span>
+              </button>
             </>
           )}
         </p>
       </div>
       <div className={styles.actions} data-reveal>
+        <button
+          type="button"
+          className={styles.secondaryAction}
+          onClick={onToggleAutoLoad}
+          aria-pressed={autoLoad}
+          title={t('quota_management.auto_load_hint')}
+        >
+          {autoLoad ? t('quota_management.auto_load_on') : t('quota_management.auto_load_off')}
+        </button>
         <button
           type="button"
           className={styles.primaryAction}

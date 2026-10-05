@@ -101,6 +101,42 @@ describe('v8 provider groups', () => {
     expect(b.groups()[0].models).toEqual(group.models);
   });
 
+  test.each(['https://changed.example', undefined])(
+    'editing one URL to %s preserves siblings and inherited group policies',
+    async (baseUrl) => {
+      const group = {
+        name: 'team',
+        'base-url': 'https://original.example',
+        priority: 9,
+        headers: { Shared: 'keep' },
+        models: [{ name: 'fixture-model' }],
+        keys: [
+          { 'api-key': 'fixture-a', weight: 2 },
+          { 'api-key': 'fixture-b', weight: 4 },
+        ],
+      };
+      const b = backend('gemini', [group, { name: 'team-2', keys: [] }]);
+      const row = rows([group])[0];
+      await providersApi.updateGeminiKey(row.apiKey, row.baseUrl, { ...row, baseUrl });
+      const updated = rows(b.groups());
+      expect(updated.find((entry) => entry.apiKey === 'fixture-b')?.baseUrl).toBe(
+        'https://original.example'
+      );
+      expect(updated.find((entry) => entry.apiKey === 'fixture-a')).toMatchObject({
+        weight: 2,
+        priority: 9,
+        headers: { Shared: 'keep' },
+      });
+      expect(updated.find((entry) => entry.apiKey === 'fixture-a')?.baseUrl).toBe(baseUrl);
+      expect(b.groups()[0]).toEqual({ ...group, keys: [group.keys[1]] });
+      expect(new Set(b.groups().map((entry) => entry.name)).size).toBe(b.groups().length);
+      for (const entry of b.groups()) {
+        for (const key of entry.keys as Record<string, unknown>[])
+          expect(key).not.toHaveProperty('base-url');
+      }
+    }
+  );
+
   test.each([undefined, null, false])(
     'a weight edit keeps the original WebSocket flag %s',
     async (websockets) => {
